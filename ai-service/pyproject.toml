@@ -122,6 +122,16 @@ known-first-party = ["app"]
 # mypy
 # =============================================================================
 [tool.mypy]
+# **这个值必须与 `.python-version` 一致。**
+#
+# 不一致会以这样一种方式失败：CI 上 `uv sync` 装的是 Python 3.12 的依赖
+# （numpy 的 3.12 存根里用了 `type` 语句），而 mypy 按 3.11 解析这些存根，
+# 于是报 "Type statement is only supported in Python 3.12 and greater"——
+# 错误指向 numpy，而真正的问题是**两个地方对"本项目跑在哪个 Python 上"
+# 给了不同的答案**。本机恰好只有 3.11，所以这个矛盾在本地永远不出现。
+#
+# 生产用的是 `python:3.11-slim`（见 Dockerfile），因此 3.11 是事实上的目标版本。
+# 若将来要升到 3.12，需要同时改这里、`.python-version` 与 Dockerfile 三处。
 python_version = "3.11"
 warn_unused_configs = true
 warn_redundant_casts = true
