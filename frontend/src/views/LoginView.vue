@@ -176,6 +176,19 @@ async function submit(): Promise<void> {
           </div>
         </div>
 
+        <!--
+          指向多租户隔离 —— 本项目最值得看的特性，但它靠"多点一次"才看得见。
+          演示按钮都在 demo-law 租户下，而隔离是**两个租户之间**的性质：
+          不提示的话，访客看完三个角色就走了，不会想到再登一次另一个租户。
+        -->
+        <p class="mt-3 text-xs leading-relaxed text-slate-600">
+          想看点更实际的？在下面的表单里用
+          <code class="rounded bg-slate-100 px-1 font-mono">acme-law</code> /
+          <code class="rounded bg-slate-100 px-1 font-mono">admin</code> /
+          <code class="rounded bg-slate-100 px-1 font-mono">LexBridge@2026</code>
+          再登一次——那是另一家律所，它的审计日志里看不到上面这三个人做过的任何事。
+        </p>
+
         <div class="my-4 flex items-center gap-3">
           <span class="h-px flex-1 bg-slate-200"></span>
           <span class="text-xs text-slate-600">或手动填写</span>
