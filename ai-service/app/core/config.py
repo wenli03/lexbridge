@@ -19,14 +19,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ModelMode(StrEnum):
     """LLM 调用模式。
 
-    real   —— 真实调用硅基流动。需要密钥，产生费用。
+    real   —— 真实调用硅基流动。需要密钥，产生费用。**不写入 fixture。**
+    record —— 真实调用**并且**把响应录成 fixture。产出回放素材时用它。
     replay —— 回放仓库内录制的真实响应。确定性、离线、零成本。
               **一键演示与 CI 的默认值**：面试官 clone 仓库后无需任何密钥
               即可跑完整链路。
     mock   —— 纯合成响应。行为可控但不反映真实模型输出，仅用于契约测试。
+
+    ## 为什么 record 是独立的一档，而不是"real 顺手录一下"
+
+    这个区别是**实测逼出来的**：本仓库的设计文档一度写着
+    「用 `MODEL_MODE=real` 跑一次以录制」，而代码里 real 模式返回的是裸的
+    `ChatOpenAI`，**根本不录制**——也就是说那条工作流从来跑不通，
+    而文档让人以为它跑得通。
+
+    把录制并进 real 也不对：real 是生产与调试用的模式，每次调用都往仓库里
+    追加文件是个没人会预期的副作用（fixture 会入仓，几轮下来就脏了）。
+
+    所以拆成独立一档：**录制是一件要明确说"我现在要产出素材"的事**，
+    它贵（真实调用）、慢、且会改动仓库内容，不该是任何默认行为的一部分。
     """
 
     REAL = "real"
+    RECORD = "record"
     REPLAY = "replay"
     MOCK = "mock"
 
@@ -125,11 +140,54 @@ class Settings(BaseSettings):
     def _strip_base_url_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
 
+    def _normalize_db_url(self, raw: str) -> str:
+        """把 Java 形式的连接串转成 psycopg 能用的。
+
+        两种情况，都实测踩过（见 `dsn` 的说明）：
+          · `jdbc:postgresql://host:port/db`  —— 前缀要去掉
+          · 去掉前缀后**仍然没有 username** —— 凭据要以分字段的值补上
+
+        已经有凭据的串（容器内 compose 注入的那种）原样返回：
+        那时它才是唯一权威，用分字段的值去覆盖反而会引入不一致。
+        """
+        from urllib.parse import quote, urlsplit, urlunsplit
+
+        url = raw.removeprefix("jdbc:")
+        parts = urlsplit(url)
+        if parts.username is not None:
+            return url
+
+        userinfo = f"{quote(self.db_username, safe='')}:{quote(self.db_password, safe='')}@"
+        host = parts.hostname or self.db_host
+        netloc = f"{userinfo}{host}"
+        if parts.port:
+            netloc += f":{parts.port}"
+        return urlunsplit(
+            (parts.scheme or "postgresql", netloc, parts.path, parts.query, parts.fragment)
+        )
+
     @property
     def dsn(self) -> str:
-        """组装出的数据库连接串。显式提供的 db_url 优先（容器内走这条）。"""
+        """组装出的数据库连接串。显式提供的 db_url 优先（容器内走这条）。
+
+        **这里要做两件事，都是被同一个坑逼出来的。**
+
+        `deploy/.env` 被两类消费者共用（决策记录 §6.9）：Java 侧要
+        `jdbc:postgresql://host:port/db`，Python 侧要 `postgresql://user:pw@host:port/db`。
+        而 pydantic 的 `env_file` 会把这个文件里的 `DB_URL` **原样**读进本类——
+        于是：
+
+          1. 宿主上跑 Python 脚本会拿到带 `jdbc:` 前缀的串，psycopg 解析失败；
+          2. 就算去掉前缀，那条 URL **也不含凭据**——Java 是把用户名口令
+             分开传的，所以它只需要位置。psycopg 拿到没有 userinfo 的串会以
+             当前操作系统用户去连，报的是认证失败。
+
+        两个症状都指向"连接串写错了"，而真正的原因是**同一个变量名被两个
+        运行时用不同的约定共用**。归一化放在配置层而不是各个脚本里：
+        在每个调用方各写一遍的结果是总有人漏掉，而漏掉的表现是连接失败。
+        """
         if self.db_url:
-            return self.db_url
+            return self._normalize_db_url(self.db_url)
         from urllib.parse import quote
 
         # 口令必须转义：随机生成的 base64 口令几乎一定含 + / = 等字符，

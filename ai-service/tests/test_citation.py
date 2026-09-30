@@ -158,3 +158,46 @@ def test_summary_counts_every_status() -> None:
     assert summary["OK"] == 1
     assert summary["claims_kept"] == 1
     assert summary["claims_stripped"] == 1
+
+
+# =============================================================================
+# as_of 的缺省
+# =============================================================================
+def test_missing_as_of_falls_back_to_today_in_the_node_payload() -> None:
+    """`citation_check_payload` 在 `as_of` 缺省时必须兜到"今天"。
+
+    **空串会让每一条引用都被判 STALE。** 理由是 `CandidateArticle.covers()`
+    里那句 `as_of < effective_from`——空串按字典序小于任何日期，于是恒为真。
+    而 STALE 不是拒绝，它是"引用真实存在、只是在该时点不生效"，属于
+    **保留但标注**的一档。两件事叠起来：调用方漏传一个字段，
+    输出看起来完全合理（"引用确实存在，只是时点对不上"），而全部标注都是错的。
+
+    实测踩到过：演示脚本没设 `as_of`，12 条引用全判 STALE，
+    并且因为 STALE 在校验链里先于"引文比对"返回，它**顺带掩盖了**
+    更严重的一类问题（模型改写引文导致不匹配）。
+    """
+    from app.graph.nodes import citation_check_payload
+
+    state = {
+        "tenant_id": TENANT,
+        "retrieved": [
+            {
+                "article_id": "art-001",
+                "article_no": "第三条",
+                "content": ARTICLE.content,
+                "tenant_scope": "PLATFORM",
+                "effective_from": "2024-01-01",
+                "effective_to": None,
+                "statute_title": "示例税法",
+                "hierarchy_path": [],
+            }
+        ],
+        # 刻意不给 as_of
+    }
+    payload = citation_check_payload(
+        state, [Claim("企业所得税税率为 25%。", (Citation("art-001", "税率为百分之二十五"),))]
+    )
+
+    summary = payload["citation_check"]["summary"]
+    assert summary.get("OK") == 1, f"缺省 as_of 时不应判 STALE：{summary}"
+    assert not summary.get("STALE")

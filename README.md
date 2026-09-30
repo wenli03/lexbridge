@@ -120,7 +120,7 @@ JWT 签发、租户解析、审计留痕一个都不少。
 >
 > ⚠️ **但 `ai-service/fixtures/replay/` 目前是空的**（只有 `.gitkeep`），
 > 所以 replay 模式**现在跑不通**。这是一个**未完成的交付项**，不是设计缺陷：
-> 在录制第一批 fixture 之前，请用 `MODEL_MODE=real` 并填入 `SILICONFLOW_API_KEY`。
+> 重新录制用 `MODEL_MODE=record` 并填入 `SILICONFLOW_API_KEY`。
 >
 > 注意这与上面的"零密钥"并不矛盾：**知识库那条链路不经过任何模型调用**——
 > 语料与预计算向量都随仓库提交，所以它能离线跑通。

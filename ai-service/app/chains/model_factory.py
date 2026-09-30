@@ -50,6 +50,13 @@ def get_chat_model(
     """
     cfg = settings or get_settings()
 
+    if cfg.model_mode is ModelMode.RECORD:
+        if not scenario:
+            # 录制没有场景名就无法决定写进哪个文件，会静默写到 unnamed.jsonl，
+            # 而回放时按真实场景名去找，永远找不到。
+            raise ValueError("record 模式必须提供 scenario，用于决定写入哪个 fixture 文件")
+        return _recording_chat_model(cfg, scenario, temperature=temperature, model=model, **kwargs)
+
     if cfg.model_mode is ModelMode.REAL:
         return _real_chat_model(cfg, temperature=temperature, model=model, **kwargs)
 
@@ -67,6 +74,34 @@ def get_chat_model(
     return ReplayChatModel(records=_synthetic_records(), scenario="mock")
 
 
+def _real_chat_kwargs(
+    cfg: Settings,
+    *,
+    temperature: float,
+    model: str | None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """真实 chat 模型的构造参数。
+
+    **抽成 dict 而不是让两处各写一遍**：`real` 与 `record` 必须构造出
+    配置完全一致的模型——否则录制出来的响应和真实运行时拿到的响应
+    来自两个不同的模型（温度、超时、重试任一不同就够），
+    而 fixture 看上去完全正常，只是"和线上不太一样"。
+    """
+    return {
+        "model": model or cfg.chat_model,
+        "base_url": cfg.siliconflow_base_url,
+        "api_key": cfg.require_api_key(),
+        "temperature": temperature,
+        "timeout": cfg.llm_timeout_seconds,
+        # 冷启动实测波动 0.7s–65.9s（decision-record.md §3.3），
+        # 因此重试不是可选项。SDK 自带的退避覆盖连接层失败，
+        # 业务层的 429/5xx 重试在 embed_client 里另做。
+        "max_retries": cfg.llm_max_retries,
+        **kwargs,
+    }
+
+
 def _real_chat_model(
     cfg: Settings,
     *,
@@ -74,18 +109,32 @@ def _real_chat_model(
     model: str | None,
     **kwargs: Any,
 ) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=model or cfg.chat_model,
-        base_url=cfg.siliconflow_base_url,
-        api_key=cfg.require_api_key(),
-        temperature=temperature,
-        timeout=cfg.llm_timeout_seconds,
-        # 冷启动实测波动 0.7s–65.9s（decision-record.md §3.3），
-        # 因此重试不是可选项。SDK 自带的退避覆盖连接层失败，
-        # 业务层的 429/5xx 重试在 embed_client 里另做。
-        max_retries=cfg.llm_max_retries,
-        **kwargs,
+    return ChatOpenAI(**_real_chat_kwargs(cfg, temperature=temperature, model=model, **kwargs))
+
+
+def _recording_chat_model(
+    cfg: Settings,
+    scenario: str,
+    *,
+    temperature: float,
+    model: str | None,
+    **kwargs: Any,
+) -> BaseChatModel:
+    """record 模式：真实调用 + 落盘。
+
+    构造出一个真正的 `ChatOpenAI`（经 `_real_chat_model`），只把类换成会记录的
+    子类——这样"录下来的响应"与"real 模式下的响应"必然是同一条代码路径产生的，
+    不存在"录制走了一套参数、生产走另一套"的可能。
+    """
+    from app.chains.recording import RecordingChatOpenAI
+
+    logger.info("录制模式：场景 %s → %s", scenario, _fixture_dir(cfg) / f"{scenario}.jsonl")
+    recording = RecordingChatOpenAI(
+        **_real_chat_kwargs(cfg, temperature=temperature, model=model, **kwargs)
     )
+    # store 是 PrivateAttr，构造后赋值（它不能是普通字段，理由见 recording.py）
+    recording._store = FixtureStore(_fixture_dir(cfg), scenario)
+    return recording
 
 
 def _synthetic_records() -> list[dict[str, Any]]:
@@ -153,7 +202,16 @@ def get_embeddings(
 
     from app.chains.embed_client import SiliconFlowEmbeddings
 
-    return SiliconFlowEmbeddings(cfg)
+    real = SiliconFlowEmbeddings(cfg)
+
+    if cfg.model_mode is ModelMode.RECORD:
+        if not scenario:
+            raise ValueError("record 模式必须提供 scenario，用于决定写入哪个 fixture 文件")
+        from app.chains.recording import RecordingEmbeddings
+
+        return RecordingEmbeddings(real, FixtureStore(_fixture_dir(cfg), scenario))
+
+    return real
 
 
 # =============================================================================
@@ -180,10 +238,17 @@ class Reranker(Protocol):
 def get_reranker(*, settings: Settings | None = None, scenario: str | None = None) -> Reranker:
     cfg = settings or get_settings()
 
-    if cfg.model_mode is ModelMode.REAL:
+    if cfg.model_mode in (ModelMode.REAL, ModelMode.RECORD):
         from app.chains.embed_client import SiliconFlowReranker
 
-        return SiliconFlowReranker(cfg)
+        real = SiliconFlowReranker(cfg)
+        if cfg.model_mode is ModelMode.RECORD:
+            if not scenario:
+                raise ValueError("record 模式必须提供 scenario，用于决定写入哪个 fixture 文件")
+            from app.chains.recording import RecordingReranker
+
+            return RecordingReranker(real, FixtureStore(_fixture_dir(cfg), scenario))
+        return real
 
     from app.chains.replay import ReplayReranker
 

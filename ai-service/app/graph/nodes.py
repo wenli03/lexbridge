@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from langgraph.types import interrupt
@@ -102,7 +103,16 @@ def citation_check_payload(state: ConsultState, claims: list[Claim]) -> dict[str
         claims,
         articles_of(state),
         tenant_id=state.get("tenant_id", ""),
-        as_of=state.get("as_of", ""),
+        # **`as_of` 缺省时必须兜到"今天"，不能是空串。**
+        #
+        # 空串会让 `CandidateArticle.covers()` 里那句
+        # `as_of < effective_from` 恒为真，于是**每一条引用都被判 STALE**。
+        # 而 STALE 不是拒绝——它是"引用真实存在、只是在该时点不生效"，
+        # 属于**保留但标注**的一档（见 citation.py 的判定说明）。
+        # 两件事叠起来的后果是：调用方漏传一个字段，输出看起来完全合理
+        # （"引用确实存在，只是时点对不上"），而实际上全部标注都是错的。
+        # 实测踩到过：脚本没设 as_of，12 条引用全判 STALE。
+        as_of=state.get("as_of") or date.today().isoformat(),
     )
 
     citations: list[dict[str, str]] = []

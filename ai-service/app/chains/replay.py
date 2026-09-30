@@ -72,7 +72,7 @@ class FixtureStore:
             # 而它看起来像磁盘问题，排查方向一开始就是错的。
             raise FixtureNotFoundError(
                 f"回放 fixture 不存在：{self.path}\n"
-                f"请先用 MODEL_MODE=real 跑一次该场景以录制，"
+                f"请先用 MODEL_MODE=record 跑一次该场景以录制，"
                 f"或确认 REPLAY_FIXTURE_DIR 指向正确。"
             )
         records: list[dict[str, Any]] = []
@@ -157,7 +157,7 @@ class ReplayChatModel(BaseChatModel):
                 f"场景 {self.scenario!r} 的录制已用尽"
                 f"（第 {self.cursor + 1} 次调用，共录 {len(exchanges)} 次）。\n"
                 f"通常是提示词或节点顺序改动导致调用次数变化。"
-                f"请用 MODEL_MODE=real 重新录制该场景。"
+                f"请用 MODEL_MODE=record 重新录制该场景。"
             )
         rec = exchanges[self.cursor]
         self.cursor += 1
