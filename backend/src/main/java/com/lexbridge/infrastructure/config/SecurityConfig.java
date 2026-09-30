@@ -53,6 +53,12 @@ public class SecurityConfig {
             "/actuator/info",
             // 登录是唯一无需令牌的业务端点
             "/api/auth/login",
+            // 演示账号清单。调用它的人尚未登录，因此必然匿名。
+            // 它返回的是**已经公开写在 README 里**的演示凭据，且仅在
+            // lexbridge.bootstrap.demo-data 打开时才有内容（关闭时返回
+            // enabled=false 与空列表）——开关与它读的是同一处定义，
+            // 见 DemoAccounts 与 application.port.DemoAccountProvider 的说明。
+            "/api/auth/demo-accounts",
     };
 
     @Bean

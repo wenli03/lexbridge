@@ -79,6 +79,30 @@ def main() -> int:
     print("LexBridge demo acceptance")
     print("=" * 72)
 
+    # --- 0. 访客的第一屏：登录页的一键入口 ---------------------------------
+    # 本系统没有自助注册（账号由管理员开设，是产品口径而非待补功能），
+    # 因此"能不能不读文档就进去"决定了一个访客会不会继续往下看。
+    # 这里检查两件事：入口**存在**，以及入口给的凭据**真的能登录**——
+    # 只检查前者会漏掉"按钮渲染出来了但点了进不去"这种最糟的状态。
+    status, payload = call("GET", "/api/auth/demo-accounts")
+    data = payload.get("data") or {}
+    demo_accounts = data.get("accounts") or []
+    check(
+        status == 200 and data.get("enabled") is True and len(demo_accounts) >= 3,
+        "demo entry is available without auth (interviewer can get in)",
+        f"status={status} enabled={data.get('enabled')} accounts={len(demo_accounts)}",
+    )
+
+    for account in demo_accounts:
+        status, token, _ = login(account["tenantCode"], account["username"])
+        if account["password"] != PASSWORD:
+            token = None
+        check(
+            status == 200 and token is not None,
+            f"one-click credential works: {account['username']}",
+            f"status={status}",
+        )
+
     # --- 1. 三个角色都能登录，角色正确 -------------------------------------
     tokens: dict[str, str] = {}
     for username, expected_role in (

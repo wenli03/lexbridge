@@ -34,6 +34,28 @@ export interface LoginResponse {
   user: CurrentUser
 }
 
+/**
+ * 演示入口。
+ *
+ * `enabled=false` 时 `accounts` 必为空。**两个字段一起判断**，不要只看数组长度：
+ * "演示模式关着"与"演示模式开着但账号还没建出来"对使用者是两件事，
+ * 前者应当一个入口都不显示，后者值得提示一句"稍等，正在初始化"。
+ */
+export interface DemoAccounts {
+  enabled: boolean
+  accounts: DemoAccount[]
+}
+
+export interface DemoAccount {
+  tenantCode: string
+  username: string
+  password: string
+  displayName: string
+  role: Role
+  /** 该角色登录后能看到什么。与服务端 MENU_BY_ROLE 描述的是同一件事。 */
+  scope: string
+}
+
 export const authApi = {
   login: (payload: LoginRequest) => api.post<LoginResponse>('/auth/login', payload),
 
@@ -41,6 +63,18 @@ export const authApi = {
   me: () => api.get<CurrentUser>('/auth/me'),
 
   logout: () => api.post<void>('/auth/logout'),
+
+  /**
+   * 演示账号清单（匿名可读）。
+   *
+   * 本系统没有自助注册——账号由管理员开设，这是产品口径而非待补功能。
+   * 但访客不知道"租户标识"该填什么，那一页就成了整个项目的门槛。
+   * 这个接口把**已经公开写在 README 里的演示凭据**交给登录页渲染成按钮，
+   * 点击后走的是**真实的登录流程**，不是任何形式的绕开。
+   *
+   * 未开启演示模式时返回 `enabled:false`，页面上不会出现任何入口。
+   */
+  demoAccounts: () => api.get<DemoAccounts>('/auth/demo-accounts'),
 }
 
 /**

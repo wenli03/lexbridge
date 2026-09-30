@@ -35,7 +35,18 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: '',
-        redirect: { name: 'consult' },
+        // 用函数而不是写死某一页：写死会让"访问根路径"与角色脱钩。
+        // 函数在 store 尚未恢复时会返回登录页（见 landingRouteFor），
+        // 而守卫的 `to.meta.public` 分支随即把已登录的人送回正确的落地页——
+        // 兜了一圈，但每一步都是确定的，不会停在一个该角色进不去的页面上。
+        // `redirect` 不接受 `false`（那是"中止导航"的语义，只有守卫能给），
+        // 因此把 `landingRouteFor` 的兜底值在这里换成登录页：
+        // 已登录但没有任何可进页面时，登录页的守卫会以 `false` 中止导航，
+        // 人停在原地而不是空转——不会形成重定向环。
+        redirect: () => {
+          const landing = landingRouteFor(useAuthStore())
+          return landing === false ? { name: 'login' } : landing
+        },
       },
       {
         path: 'consult',
@@ -104,16 +115,27 @@ const router = createRouter({
  * 那时没有任何页面可去，回登录页又会被再弹回来，所以直接放行当前导航，
  * 让界面停在原地而不是空转。
  */
-function landingFor(auth: ReturnType<typeof useAuthStore>): RouteLocationRaw | false {
+export function landingRouteFor(auth: ReturnType<typeof useAuthStore>): RouteLocationRaw | false {
   const shell = routes.find((record) => Array.isArray(record.children))
-  const allowed = shell?.children?.find((child) => {
-    const menu = child.meta?.menu
-    return typeof menu === 'string' && auth.canAccess(menu)
-  })
-  if (typeof allowed?.name !== 'string') {
-    return auth.isAuthenticated ? false : { name: 'login' }
+  const children = shell?.children ?? []
+
+  // **按角色自己的菜单顺序找，而不是按路由表的顺序。**
+  //
+  // `MENU_BY_ROLE` 里的顺序是有意的——管理员的第一项是「知识库」，
+  // 那是他的主工作面。而路由表的顺序只是代码组织方式（consult 恰好写在最前）。
+  // 用路由表顺序会让管理员落在「法律咨询」上，而那一页的服务端尚未实现：
+  // 访客点「一键进入演示」，第一眼看到的是"本功能未实现"——
+  // 一个纯粹由排序造成的、最差的观感。
+  for (const menu of auth.visibleMenus) {
+    const match = children.find((child) => child.meta?.menu === menu)
+    if (typeof match?.name === 'string') {
+      return { name: match.name }
+    }
   }
-  return { name: allowed.name }
+
+  // 走不到这里（守卫的另一条分支已排除无权限的角色）。
+  // 保留兜底：宁可停在原地，也不要返回一个会引发无限重定向的目标。
+  return auth.isAuthenticated ? false : { name: 'login' }
 }
 
 router.beforeEach(async (to) => {
@@ -127,7 +149,7 @@ router.beforeEach(async (to) => {
 
   if (to.meta.public) {
     // 已登录用户访问登录页，直接送回工作台
-    return auth.isAuthenticated ? landingFor(auth) : true
+    return auth.isAuthenticated ? landingRouteFor(auth) : true
   }
 
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
@@ -141,7 +163,7 @@ router.beforeEach(async (to) => {
     // 手动输 URL 是常见行为，为此弹一个错误框属于过度反应。
     // 注意不能写成固定的某一页：那一页本身可能也是这个角色进不去的，
     // 于是守卫把用户送过去、再判一次无权，就成了死循环。
-    return landingFor(auth)
+    return landingRouteFor(auth)
   }
 
   return true

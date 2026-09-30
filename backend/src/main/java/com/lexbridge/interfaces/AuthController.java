@@ -1,7 +1,9 @@
 package com.lexbridge.interfaces;
 
 import com.lexbridge.application.AuthAppService;
+import com.lexbridge.application.DemoAccountAppService;
 import com.lexbridge.application.command.LoginCommand;
+import com.lexbridge.application.dto.DemoAccountsView;
 import com.lexbridge.application.dto.LoginResult;
 import com.lexbridge.interfaces.dto.ApiResponse;
 import jakarta.validation.Valid;
@@ -29,9 +31,12 @@ import java.util.UUID;
 public class AuthController {
 
     private final AuthAppService authAppService;
+    private final DemoAccountAppService demoAccountAppService;
 
-    public AuthController(AuthAppService authAppService) {
+    public AuthController(AuthAppService authAppService,
+                          DemoAccountAppService demoAccountAppService) {
         this.authAppService = authAppService;
+        this.demoAccountAppService = demoAccountAppService;
     }
 
     /**
@@ -73,6 +78,30 @@ public class AuthController {
                         ApiResponse.ApiError.of("UNAUTHENTICATED",
                                 "租户、用户名或密码不正确"),
                         traceId)));
+    }
+
+    /**
+     * 演示模式下可直接登录的账号清单。
+     *
+     * <p><b>为什么这个接口存在。</b> 本系统没有自助注册——多租户企业工具的账号由
+     * 管理员开设，这不是待补的功能，是产品口径（PRD 里"管理本租户成员"是租户管理员的
+     * 能力）。但对一个 clone 下来看的人，这意味着**他会停在一个填不出租户标识的登录页上**，
+     * 而"租户标识"不是他能猜出来的东西。这一页于是成了整个项目的门槛。
+     *
+     * <p>解法不是加注册（那会改变产品形态，也会让任何人都能建租户），
+     * 而是把**已经公开写在 README 里的演示凭据**直接呈现成按钮：点一下走**真实的登录流程**，
+     * JWT 签发、租户解析、审计留痕一个都不少。它只是省掉了"先去文档里翻租户标识"这一步。
+     *
+     * <p><b>这是匿名可访问的</b>（已加入 {@code SecurityConfig} 的放行清单），
+     * 因为调用它的人还没登录。安全边界由两点构成，二者必须同源：
+     * 一是 {@code lexbridge.bootstrap.demo-data} 开关，二是它返回的账号
+     * 与那个开关创建的是同一批（定义在 {@code DemoAccounts} 一处）。
+     * 开关关闭时返回 {@code enabled=false} 与空列表，页面上不会出现任何入口。
+     */
+    @GetMapping("/demo-accounts")
+    public ResponseEntity<ApiResponse<DemoAccountsView>> demoAccounts() {
+        String traceId = traceId();
+        return ResponseEntity.ok(ApiResponse.ok(demoAccountAppService.demoAccounts(), traceId));
     }
 
     @GetMapping("/me")

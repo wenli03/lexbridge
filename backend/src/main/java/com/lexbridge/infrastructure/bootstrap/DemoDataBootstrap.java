@@ -1,7 +1,6 @@
 package com.lexbridge.infrastructure.bootstrap;
 
 import com.lexbridge.application.context.TenantContextHolder;
-import com.lexbridge.domain.model.Role;
 import com.lexbridge.domain.model.Tenant;
 import com.lexbridge.domain.model.UserAccount;
 import com.lexbridge.domain.repository.TenantRepository;
@@ -51,8 +50,11 @@ public class DemoDataBootstrap implements ApplicationRunner {
      * <p>刻意用明文常量而不是从环境变量读：它本来就不是秘密，
      * 写成环境变量反而会让人以为「配了这个就安全了」。
      * 真正的保护是下面那条 profile 限定——生产环境根本不会执行到这里。
+     *
+     * <p><b>定义已移到 {@link DemoAccounts}</b>：登录页的一键入口要读同一份口令，
+     * 两处各写一份的分岔表现是"照页面上的提示点进去登不上"，而它看起来像口令被改过。
      */
-    private static final String DEMO_PASSWORD = "LexBridge@2026";
+    private static final String DEMO_PASSWORD = DemoAccounts.PASSWORD;
 
     private final TenantRepository tenantRepository;
     private final UserAccountRepository userRepository;
@@ -101,13 +103,13 @@ public class DemoDataBootstrap implements ApplicationRunner {
     }
 
     private int seedUsersFor(Tenant tenant) {
-        List<SeedUser> seeds = List.of(
-                new SeedUser("admin", "系统管理员", Role.ADMIN),
-                new SeedUser("lawyer", "张律师", Role.LAWYER),
-                new SeedUser("compliance", "李合规", Role.COMPLIANCE_OFFICER));
+        // 清单来自 DemoAccounts —— 那里的同一份定义也供登录页的一键入口使用。
+        // 在本地再写一份 `List.of(...)` 会让"改了建账号的清单、忘了改入口"
+        // 变成一次静默的不一致。
+        List<DemoAccounts.Seed> seeds = DemoAccounts.SEEDS;
 
         int count = 0;
-        for (SeedUser seed : seeds) {
+        for (DemoAccounts.Seed seed : seeds) {
             if (userRepository.existsByUsername(seed.username())) {
                 continue;
             }
@@ -134,8 +136,5 @@ public class DemoDataBootstrap implements ApplicationRunner {
         // 掩盖过去，所以它躲过了本地反复重启的验证，只被"从零开始跑一次"抓到。
         userRepository.flush();
         return count;
-    }
-
-    private record SeedUser(String username, String displayName, Role role) {
     }
 }
