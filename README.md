@@ -124,7 +124,7 @@ JWT 签发、租户解析、审计留痕一个都不少。
 >
 > 注意这与上面的"零密钥"并不矛盾：**知识库那条链路不经过任何模型调用**——
 > 语料与预计算向量都随仓库提交，所以它能离线跑通。
-> 而咨询链路一旦落地就会经过模型，那时 replay fixture 是必需品。见「已知边界」。
+> 咨询链路的模型响应走 replay（fixture 已入库），见下面的「AI 那一段怎么跑」。
 >
 > 另外，密钥一律只放进被 `.gitignore` 覆盖的 `deploy/.env`，不要写进任何受版本控制的文件。
 
@@ -160,6 +160,8 @@ cd frontend     && npm ci && npm run dev
 | 查审计留痕，点 traceId 反查"这一次发生了什么" | 侧栏「审计日志」 |
 | 看两个租户的数据确实互不可见 | 隐私窗口再登 `acme-law`，对比审计日志 |
 | 看角色权限**在服务端**被强制（不只是菜单不显示） | 用 `lawyer` 登录，它读不到审计 |
+| **看 AI Agent 完整跑一遍**（真检索、真红线、11 节点轨迹） | `python scripts/demo_consult.py` |
+| **看合规红线拦住违法请求** | 同上，第二个场景 |
 | 一条命令把上面这些全验一遍 | `python scripts/verify_demo.py` |
 
 **现在还不能做的**（点进去会看到一段说明，而不是能用的界面）：
@@ -169,6 +171,69 @@ cd frontend     && npm ci && npm run dev
 ![法律咨询页](docs/images/05-consult-not-implemented.png)
 
 <sub>未实现的页面长这样：说明缺哪几个端点，而不是一个红色报错。</sub>
+
+---
+
+## AI 那一段怎么跑
+
+上面那张表里的「法律咨询」在浏览器里点不到——**它的服务端没接**。
+但那个 Agent 本身是完整的，有一条命令可以直接把它跑给你看：
+
+```bash
+python scripts/demo_consult.py
+```
+
+**不需要任何密钥。** 输出是这条链路的完整执行轨迹：
+
+```
+▶ 咨询：我们打算在荷兰设控股公司，由它向爱尔兰子公司收取特许权使用费…
+
+  [ 1] classify_intent      → 意图 = TAX_PLANNING
+  [ 2] extract_facts        → 槽位 = {'jurisdictions': ['CN','NL','IE'], …}
+  [ 3] check_slots          → 槽位齐备
+  [ 4] plan_retrieval       → 检索路由 = THRESHOLD
+  [ 5] retrieve             → 命中 12 条法条，来自 2 部法规
+  [ 6] redline_check        → 未命中红线，放行到生成
+  [ 7] generate_candidates  → 生成 3 套候选架构
+  [ 8] review_anti_avoidance→ 反避税风险等级：[('架构一…', '高'), ('架构二…', '中')]
+  [ 9] compute_tax          → 确定性税额计算（代码算，不经模型）
+  [10] verify_citations     → {'OK': 8, 'claims_kept': 8, 'claims_stripped': 0}
+  [11] compose_answer       → 成文 978 字
+```
+
+里面的数字都是真的：检索真的打到库里那 2,562 条法条（输出会列出命中的法条与
+层级路径），红线判定真的执行，引用校验真的逐条比对原文子串。
+模型响应走回放（`ai-service/fixtures/replay/`，随仓库提交），因此**结果确定、可复现**。
+
+另一个场景演示**合规红线**：要求设计无实质的空壳安排时，
+图在 `redline_check` 就命中 `RL-04` 并转入拒答，给出合法替代路径——
+**违法内容根本不会进入生成节点**。这不是靠提示词里写一句"不要回答违法问题"：
+
+```
+DR-4  redline 不得 import chains
+```
+
+这条约束被写进 `import-linter` 契约，由 CI 强制执行——红线判定若依赖模型，
+就存在"模型被说服后绕过红线"的风险，而这不能靠自觉。
+
+<details>
+<summary>这条链路里几个值得单独说的工程决定</summary>
+
+- **引用必须逐字。** `verify_citations` 把每条结论的引文与法条原文做子串比对，
+  改写过的引文会导致该结论**整句被剥离**。实测：模型会"顺手把引文改顺"
+  （补一个主语），修复办法是在提示词与 function calling 的字段说明里都写明
+  "逐字、不改写、不补主语、不跨段拼接"。修好之前 8 条引用全部不通过。
+- **税额由代码算，不经模型。** `compute_tax` 是纯函数，缺参数时返回
+  `blocked_by` 说明缺什么，而不是让模型猜一个数字——"缺失"与"免税"是两件事。
+- **中断是正常暂停，不是异常。** 槽位不全时图停在 `ask_clarification`，
+  之后由**另一个请求**带 `Command(resume=...)` 恢复；恢复时已完成的节点不重跑
+  （`scripts/smoke_checkpoint_interrupt.py` 用计数器证明了这一点）。
+  演示脚本里的第二个场景就会走一次追问-恢复。
+- **检查点的 `thread_id` 绑租户**（`{tenant_id}:{run_id}`）。
+  LangGraph 的检查点表主键只有 `thread_id`，猜中就能 `Command(resume=...)`
+  别人的会话——前缀校验把这条路堵死。
+
+</details>
 
 ---
 
@@ -188,7 +253,7 @@ cd frontend     && npm ci && npm run dev
 
 ## 值得看的几个设计决策
 
-### 三模式模型工厂：`real` / `replay` / `mock`
+### 四模式模型工厂：`real` / `record` / `replay` / `mock`
 
 所有模型调用都经 `ai-service/app/chains/model_factory.py`，任何地方都不直接
 `ChatOpenAI(...)`。这不是为了抽象而抽象，而是同时解决三个约束：
@@ -197,8 +262,15 @@ cd frontend     && npm ci && npm run dev
 - 演示不能因网络抖动或模型产品线变动而翻车
 - **面试官 clone 下来应当无需密钥即可跑通**
 
-`replay` 模式把真实响应（含 `tool_calls` 结构、embedding 向量、rerank 分数）
-录成 fixture 提交进仓库，之后无限次离线重放。
+`record` 模式真实调用**并落盘**，`replay` 模式把录下的响应
+（含 `tool_calls` 结构、embedding 向量、rerank 分数）离线重放。
+
+> **`record` 是独立一档，不是"real 顺手录一下"。** 这一点是踩出来的：
+> 文档曾四处写着「用 `MODEL_MODE=real` 跑一次以录制」，而 real 模式返回的是裸的
+> `ChatOpenAI`，**根本不录制**——那条工作流从来没有可执行的入口，
+> 而文档让人以为它跑得通。并进 real 也不对：real 是生产与调试用的模式，
+> 每次调用都往仓库追加文件是个没人会预期的副作用。
+> 录制是一件要明确说"我现在要产出素材"的事。
 
 ### 架构规则由构建强制，不由文档约束
 
@@ -241,7 +313,7 @@ JWT → 应用层 → 数据库 RLS → 检索层强制过滤注入 → 审计�
 | 咨询链路服务端 | 两类咨询端到端可用 | **未实现** | 前端页面、SSE 事件协议、`consult_tax_graph` 与 `diverge` 的矩阵库都已就绪（AI 侧有 25 条离线测试覆盖），**缺中间层**：`ai` 的 `/internal/graph/run`、`/resume`、`/internal/retrieval/search`，`backend` 的 `/api/consult-sessions` 共 5 个端点，以及会话/运行记录的表（详细设计引用了 `consult_run` 但未给出 DDL）。对应页面显示明确说明而非报错 |
 | 知识入库服务端 | 上传 → 解析 → 抽取 → 复核 → 发布 | **未实现** | 表结构已建好（`kb.ingestion_job`、`kb.review_task`、`app.publish_record`、`app.review_decision`），`api` 侧的 `IngestionGateway` 与 `AiServiceClient` 也已实现；`ai` 侧的 `/internal/index/document` 只到"建任务"（`status=RECEIVED`），解析之后各步未实现。因此 `/api/knowledge/*` 共 7 个端点不存在 |
 | 预计算向量覆盖 | 全量 2,562 条 | **319 条（12.5%）** | 全量向量约 13MB 会让 clone 明显变慢，故只随仓库提交 3 部完整法规（319 条）。**未覆盖的法条不是错误状态**：照常展示、照常关键词检索，只是语义检索无覆盖。覆盖清单与重生成方式见 [deploy/seed/vectors/README.md](deploy/seed/vectors/README.md) |
-| replay fixture | 提交后零密钥跑通咨询 | **目录为空** | `ai-service/fixtures/replay/` 只有 `.gitkeep`。且当前**没有录制工具**——`MODEL_MODE=real` 并不会录制，`record_*` 只被测试调用。在补上 recorder 之前，"真实调用一次、离线无限重放"这条路径无法执行。这不影响知识库链路（它不经过模型） |
+| replay fixture | 提交后零密钥跑通咨询 | ✅ 已达成 | 两个场景的录制已入库（116KB），`scripts/demo_consult.py` 零密钥跑通完整 Agent：真检索 2,562 条法条、真过红线、确定性回放模型。录制器为 `MODEL_MODE=record`（第四档）——**它此前不存在**，文档写着「用 real 录制」但 real 并不录制 |
 | 扫描件 PDF | — | 不支持 | LlamaIndex core 不含 OCR；扫描件进入"待人工干预"队列并给出原因（AC-1.7） |
 | 评测流水线 | 完整 golden 集 + CI 定时门禁 | 最小评测集 | 足以产出核心指标的实测数字，不做定时评估 |
 | DeepAgent 长报告 | — | 可选路径 | 实测该模型不主动使用规划工具，若启用需显式提示；不可用时退化为普通 LangGraph fan-out |
