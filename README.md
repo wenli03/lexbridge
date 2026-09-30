@@ -1,5 +1,7 @@
 # LexBridge 法桥
 
+[![CI](https://github.com/wenli03/lexbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/wenli03/lexbridge/actions/workflows/ci.yml)
+
 面向企业律师的 AI 原生跨境法律咨询平台，以及配套的 Agent 工程化体系。
 
 **clone 下来一条命令，就能登录、浏览 2,562 条真实法条、查到自己的审计留痕。不需要任何密钥。**

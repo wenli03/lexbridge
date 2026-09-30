@@ -51,7 +51,7 @@ jobs:
   # 密钥扫描 —— 最先跑，最快失败
   # ===========================================================================
   secret-scan:
-    name: 密钥扫描
+    name: 预检（密钥与脚本权限）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +64,16 @@ jobs:
       # 否则"扫描失败"与"装不上依赖"会难以区分
       - name: 扫描将被提交的文件
         run: python scripts/verify_no_secrets.py
+
+      # 这一条守的是 Windows 作者几乎必然会踩、且**在 Windows 上不可能发现**的问题：
+      # `core.filemode` 默认为 false，git 一律记成 100644，于是带 shebang 的
+      # backend/mvnw 在 Linux 上执行时是 "Permission denied"——
+      # 那条错误看起来像 runner 的问题或路径写错，而真正的原因是少了一个权限位。
+      #
+      # 放在这个 job 而不是 java job 里：这里是最先跑、最快失败的地方，
+      # 而问题与 Java 无关（同样的坑也会打在任何 shell 脚本上）。
+      - name: 检查脚本可执行位
+        run: python scripts/verify_exec_bits.py
 
   # ===========================================================================
   # Python AI 服务
