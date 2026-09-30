@@ -1,0 +1,14 @@
+该文件的存在只有一个目的：让 fixtures/replay/ 这个**空目录能被 git 跟踪**。
+
+为什么必须这样：replay 模式是一键演示的载体（见 docs/decision-record.md B-1），
+而 Dockerfile 里有 `COPY fixtures/ ./fixtures/`。git 不跟踪空目录，
+所以新克隆的仓库里不会有这个目录，构建会直接失败——
+错误信息是 COPY 找不到源路径，与"回放模式"看不出任何关联。
+
+P2 会用真实调用录制第一批 fixture 到这里，格式见：
+  ai-service/app/chains/replay.py 的模块文档
+  ai-service/README.md 的「三模式」一节
+
+每个场景一个 JSONL 文件，文件名即 scenario，例如：
+  tax_planning/extract_facts.jsonl
+  ingestion/extract_entities.jsonl

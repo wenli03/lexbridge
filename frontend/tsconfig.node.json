@@ -1,0 +1,20 @@
+{
+  // 用于 vite.config.ts 这类在 Node 环境执行的构建期脚本。
+  //
+  // 注意 @vue/tsconfig@0.7 只提供 tsconfig.json / tsconfig.dom.json /
+  // tsconfig.lib.json 三个文件，**没有 tsconfig.node.json**。
+  // 最初按印象写了 extends "@vue/tsconfig/tsconfig.node.json"，
+  // 报错是 "File '@vue/tsconfig/tsconfig.node.json' not found"。
+  // 这里改为继承它的基础配置。
+  "extends": "@vue/tsconfig/tsconfig.json",
+  "include": ["vite.config.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    // 构建脚本跑在 Node 里，需要 Node 的类型（__dirname、process 等）
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true
+  }
+}

@@ -1,0 +1,54 @@
+# =============================================================================
+# 行尾与二进制文件的统一约定
+# =============================================================================
+# 这份文件解决一个具体的、会让人卡住的跨平台问题。
+#
+# **症状**：Windows 上 clone 之后 `docker compose up` 起不来，报的错是
+# 容器里 `bash: ./02-app-role.sh: /bin/bash^M: bad interpreter` 之类，
+# 或者 Maven 构建报 `./mvnw: not found`。看起来像路径或权限问题。
+#
+# **原因**：Windows 上 Git 默认 `core.autocrlf=true`，clone 时会把文本文件
+# 的行尾换成 CRLF。而 shell 脚本一旦带 `\r`，Linux 上的 `#!/bin/bash`
+# 会变成 `#!/bin/bash\r`——内核去找一个名字里带回车符的解释器，自然找不到。
+#
+# **为什么这对本项目尤其要紧**：`deploy/initdb/02-app-role.sh` 是 postgres 镜像
+# 初始化时执行的脚本，`backend/mvnw` 是镜像构建时执行的。两者都在**容器里**跑，
+# 也就是都在 Linux 上跑，而 clone 可能在 Windows 上进行。
+# 这条链路上没有任何一步会提示"你的行尾不对"。
+#
+# 约定：**仓库里一律存 LF**，检出时也只是 LF（`eol=lf`），只有 Windows
+# 批处理文件例外——cmd.exe 对 LF 的处理不可靠，它们必须是 CRLF。
+# =============================================================================
+
+# 默认：交给 Git 判断是否文本，文本一律用 LF
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF，否则 cmd.exe 解析出错
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 明确标成 LF 的几类。第一类即使被误判为二进制也必须保住行尾
+*.sh    text eol=lf
+mvnw    text eol=lf
+mvnwDebug text eol=lf
+
+# 二进制：不参与行尾转换，也不要尝试做 diff
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.jar   binary
+*.zip   binary
+*.gz    binary
+
+# 语料与向量是机器生成的，行尾必须原样保留
+*.jsonl text eol=lf
+
+# 锁文件在 diff 里没有阅读价值，折叠掉
+package-lock.json  -diff
+uv.lock            -diff

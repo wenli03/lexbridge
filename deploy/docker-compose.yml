@@ -1,0 +1,302 @@
+# =============================================================================
+# LexBridge 本地编排
+# =============================================================================
+# 设计依据：docs/architecture-4plus1.md 第 6 章（物理视图）
+#
+# 一键启动：
+#     cp deploy/.env.example deploy/.env
+#     docker compose -f deploy/docker-compose.yml up -d --build
+#
+# 演示不需要任何密钥：MODEL_MODE 默认 replay，回放仓库内已录制的真实响应。
+# =============================================================================
+
+name: lexbridge
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # postgres —— 业务数据 + 本体 + 向量(pgvector) + LangGraph 检查点
+  # 只在 backnet 内可达，不发布宿主端口
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lexbridge}
+      POSTGRES_USER: ${POSTGRES_USER:-lexbridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请先创建 deploy/.env}
+      # 下面两项是给 initdb 的 02-app-role.sh 用的：它要创建应用角色并把口令
+      # 对齐到 .env 里的 DB_PASSWORD。不传的话角色建不出来，应用连不上库。
+      DB_USERNAME: ${DB_USERNAME:-lexbridge_app}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD 未设置}
+      # 让初始化脚本能装扩展
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 建库时即安装 pgvector 扩展——向量列在 Flyway 迁移里就要用到
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backnet
+    healthcheck:
+      # 注意 -U 与 -d 都要给，否则 pg_isready 会用默认用户探测而误判
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lexbridge} -d ${POSTGRES_DB:-lexbridge}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # redis —— 缓存、发布订阅、入库任务 Stream
+  # 注意：LangGraph 检查点**不在** Redis，在 PostgreSQL（见 4+1 AD-3）
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    networks:
+      - backnet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # api —— Spring Boot 3.3.5 / Java 21，业务主干
+  # 挂在 frontnet（供 web 代理）与 backnet（访问 pg/redis/ai）
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        # 留空则走官方 Maven Central。网络受限时在 .env 里配置镜像源。
+        # 直连 Central 在部分网络下会**静默卡住**（进程存活、CPU 归零、无报错），
+        # 因此把开关做出来比让人对着卡住的构建猜要划算。
+        MAVEN_MIRROR_URL: ${MAVEN_MIRROR_URL:-}
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+      SPRING_THREADS_VIRTUAL_ENABLED: "true"
+      # 演示账号（admin / lawyer / compliance，口令 LexBridge@2026）。
+      #
+      # **默认为 true 只在这份仓库的语境下成立**：它是一个作品集项目，
+      # 交付形态就是"clone 下来一条命令跑起来看"，没有演示账号则等于没交付。
+      # 生产部署**必须**在 .env 里设成 false —— `DemoDataBootstrap` 建的是
+      # 固定口令的账号，这在真实环境里是一个严重的安全问题。
+      # 代码侧还有 @ConditionalOnProperty 兜底，两层是有意重复的：
+      # 只靠部署时记得关掉，迟早会忘。
+      #
+      # 走 SPRING_APPLICATION_JSON 而不是直接写 `lexbridge.bootstrap.demo-data: ...`：
+      # **直接写是实测失败的**。`@ConditionalOnProperty` 用 PropertyResolver 按属性名
+      # 原样取值，不经过 Binder 的宽松绑定；而 `SystemEnvironmentPropertySource`
+      # 在把名字映射到环境变量时做的是「点→下划线 + 整个转大写」，
+      # 名字里的连字符 `-` 会被原样保留，于是它去找
+      # `LEXBRIDGE_BOOTSTRAP_DEMO-DATA` 这个没人会设的变量名。
+      # 症状很安静：容器起来了、迁移跑了、日志里连一条相关记录都没有，
+      # 只是"用户表是空的"，而登录会以"用户名或密码错误"的面目出现。
+      # SPRING_APPLICATION_JSON 是 Spring Boot 的一等机制，名字原样生效，没有这层映射。
+      SPRING_APPLICATION_JSON: '{"lexbridge.bootstrap.demo-data":${DEMO_DATA:-true}}'
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-lexbridge}
+      # 应用角色：刻意不是表 owner，否则 RLS 对它不生效（D-11）
+      DB_USERNAME: ${DB_USERNAME:-lexbridge_app}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD 未设置}
+      # 迁移角色：需要表 owner 权限执行 DDL 与 RLS 策略。
+      # 与上面分开是必须的——用迁移角色跑应用会让 superuser 绕过全部 RLS，
+      # 隔离静默失效且无任何报错。
+      MIGRATION_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-lexbridge}
+      MIGRATION_DB_USERNAME: ${MIGRATION_DB_USERNAME:-lexbridge}
+      MIGRATION_DB_PASSWORD: ${MIGRATION_DB_PASSWORD:?MIGRATION_DB_PASSWORD 未设置}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 未设置，请用 openssl rand -base64 48 生成}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-480}
+      INTERNAL_TOKEN_SECRET: ${INTERNAL_TOKEN_SECRET:?INTERNAL_TOKEN_SECRET 未设置}
+      AI_SERVICE_URL: http://ai:8000
+      UPLOAD_DIR: /data/files
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - files:/data/files
+    networks:
+      - frontnet
+      - backnet
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Flyway 迁移在 api 启动时执行，完成前 healthcheck 不会通过
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ai —— Python 服务，承载 LangChain / LangGraph / DeepAgent / LlamaIndex
+  # 不发布宿主端口；同时挂 backnet（访问内部服务）与 egress（出网访问模型 API）
+  # ---------------------------------------------------------------------------
+  ai:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-}
+    environment:
+      MODEL_MODE: ${MODEL_MODE:-replay}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      CHAT_MODEL: ${CHAT_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
+      CHAT_MODEL_FALLBACK: ${CHAT_MODEL_FALLBACK:-deepseek-ai/DeepSeek-V3.2}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
+      EMBEDDING_FALLBACK_MODEL: ${EMBEDDING_FALLBACK_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      RERANK_MODEL: ${RERANK_MODEL:-Qwen/Qwen3-Reranker-8B}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-128}
+      EMBEDDING_CONCURRENCY: ${EMBEDDING_CONCURRENCY:-8}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-4}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-lexbridge}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      # 检查点反序列化安全开关。仓库公开，此项必须为 true。
+      LANGGRAPH_STRICT_MSGPACK: "true"
+      DB_URL: postgresql://${DB_USERNAME:-lexbridge_app}:${DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lexbridge}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      INTERNAL_TOKEN_SECRET: ${INTERNAL_TOKEN_SECRET}
+      UPLOAD_DIR: /data/files
+      OCR_ENABLED: ${OCR_ENABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - files:/data/files
+    networks:
+      - backnet
+      - egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # seed —— 一次性灌库服务
+  # ---------------------------------------------------------------------------
+  # 把 deploy/seed/corpus 的 2,562 条真实法条（以及随仓库提交的预计算向量）
+  # 灌进 kb schema，全程不调用任何外部接口。
+  #
+  # **为什么它存在**：在此之前，语料文件在仓库里躺着，但没有任何运行时路径
+  # 能把它变成库里的行。后果是 `docker compose up` 之后知识库是空的——
+  # 界面能打开，最主要的那一页却什么都没有。
+  #
+  # **为什么它依赖 api 健康**：kb 的表由 api 的 Flyway 迁移创建，
+  # 表还不存在时灌库必然失败。反过来让 api 依赖本服务会形成环，
+  # 因此顺序是 api → seed → web（见 web 的 depends_on）。
+  # 把灌库放在 web 之前，是为了让浏览器**不可能**在灌库完成前打开页面——
+  # 否则访客会看到一个空知识库，而他会以为这个项目是坏的。
+  #
+  # restart: "no" 是有意的：这是一次性任务。失败时容器停在 Exited(1)，
+  # `docker compose ps` 一眼可见，原因在 `docker compose logs seed` 里，
+  # 而不是反复重启把日志刷掉。
+  seed:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.indexing.seed_demo", "--seed-dir", "/seed"]
+    environment:
+      DB_URL: postgresql://${DB_USERNAME:-lexbridge_app}:${DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lexbridge}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # 只读挂载：灌库服务不该有能力改动词料文件
+      - ./seed:/seed:ro
+    networks:
+      - backnet
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # web —— nginx 提供前端构建产物，并把 /api 反代到 api
+  # 全系统唯一对外暴露的端口
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+    ports:
+      - "${WEB_PORT:-80}:80"
+    networks:
+      - frontnet
+    depends_on:
+      api:
+        condition: service_healthy
+      # 灌库完成后才允许浏览器访问。这一条是"访客不会看到一个空知识库"的保证——
+      # 只靠"灌库很快，用户应该等得及"是把正确性交给时序，而不是交给编排。
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      # 用 127.0.0.1 而非 localhost：Alpine 的 wget 会把 localhost 优先解析到 ::1，
+      # 而 nginx 只绑 IPv4 时容器内的健康检查会一直 Connection refused，
+      # 同时宿主访问却是通的——症状与"服务没起来"完全不同。
+      # nginx.conf 里已补 listen [::]:80，这里再用字面 IPv4 双保险。
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+# =============================================================================
+networks:
+
+  # 浏览器侧：web 与 api
+  frontnet:
+    driver: bridge
+
+  # 内部数据面：数据库、缓存、AI 服务。internal: true 意味着**没有出网路由**，
+  # 宿主机也没有任何直接访问入口。这直接支撑 AC-5.1 的攻击面收敛。
+  backnet:
+    driver: bridge
+    internal: true
+
+  # 出网面：只有 ai 需要访问外部模型 API。
+  #
+  # 为什么需要第三条网络：物理视图 6.2 要求 backnet 为 internal: true，
+  # 但同一节又要求「ai → 硅基流动 / LangSmith 出网 HTTPS」——internal 网络上
+  # 的容器没有默认路由，二者无法同时成立。解法是给 ai 单独挂一条普通 bridge：
+  # 获得出网能力，同时不 publish 任何端口，入站仍然不可达。
+  egress:
+    driver: bridge
+
+# =============================================================================
+volumes:
+  pgdata:
+  redisdata:
+  files:

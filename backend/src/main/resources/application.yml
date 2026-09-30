@@ -1,0 +1,191 @@
+# =============================================================================
+# LexBridge API 配置
+# =============================================================================
+# 所有可变项都从环境变量注入（见 deploy/.env.example）。
+# 容器内由 docker compose 提供，本地开发从 deploy/.env 读。
+# =============================================================================
+
+spring:
+  application:
+    name: lexbridge-api
+
+  # ---------------------------------------------------------------------------
+  # Java 21 虚拟线程
+  # ---------------------------------------------------------------------------
+  # 承载长 SSE 连接的关键：咨询链路的响应是流式的，一个请求可能挂几十秒。
+  # 用平台线程池时，并发连接数直接受线程数上限约束，且每个挂起的连接都占一个
+  # 操作系统线程；虚拟线程让"等待"几乎不消耗资源，并发量不再由线程池大小决定。
+  #
+  # 对应 4+1 进程视图中「api 用虚拟线程承载长 SSE + 图内 fan-out」的设计。
+  threads:
+    virtual:
+      enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 数据源
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5433/lexbridge}
+    username: ${DB_USERNAME:lexbridge_app}
+    password: ${DB_PASSWORD:}
+    hikari:
+      # 池子大小的约束来自两侧：SSE 长连接会长期占住连接，
+      # 但检查点写入是短事务。给到 20 是让并发请求的瓶颈出现在数据库本身，
+      # 而不是在连接池排队上——否则压测测到的是池子大小而不是系统能力。
+      maximum-pool-size: 20
+      minimum-idle: 4
+      connection-timeout: 10000
+      # 长 SSE 场景下连接会长时间空闲，validation 超时必须短于连接超时
+      validation-timeout: 3000
+      keepalive-time: 60000
+
+  # ---------------------------------------------------------------------------
+  # JPA
+  # ---------------------------------------------------------------------------
+  jpa:
+    # **validate 而不是 update**：表结构由 Flyway 独占管理。
+    # 用 update 会出现两个真相源，最终 schema 取决于应用启动顺序。
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+    # -------------------------------------------------------------------------
+    # ⚠️ Flyway 使用**独立的迁移凭据**，不是上面 datasource 的应用凭据
+    # -------------------------------------------------------------------------
+    # 迁移需要 ENABLE ROW LEVEL SECURITY、CREATE POLICY、CREATE RULE —— 这些
+    # 都要求表 owner 权限，而应用角色 lexbridge_app 刻意不是 owner。
+    #
+    # 混用两种凭据会产生两种截然不同、且都很隐蔽的后果：
+    #
+    #   应用角色跑迁移 → DDL 权限不足，应用**起不来**（至少会失败，能发现）
+    #   迁移角色跑应用 → superuser **绕过全部 RLS**，多租户隔离彻底失效，
+    #                    而且不会有任何报错——隔离只是静默地不生效。
+    #
+    # 后一种才是真正危险的：系统看起来运转正常，租户数据却在互相可见。
+    url: ${MIGRATION_DB_URL:jdbc:postgresql://127.0.0.1:5433/lexbridge}
+    user: ${MIGRATION_DB_USERNAME:lexbridge}
+    password: ${MIGRATION_DB_PASSWORD:}
+    # Flyway 在 api 服务启动时运行，建全部表（app / kb / runtime 三个 schema）。
+    #
+    # 这与「kb.* 由 ai 独占写」的运行时边界不冲突：那条边界管的是**运行期 DML**，
+    # 而 DDL 集中在一处管理。让两个服务各自迁移会引入跨服务的版本协调问题，
+    # 收益远小于成本。容器启动顺序（postgres → api 迁移 → ai 启动）保证了
+    # ai 起来时表已就绪。
+    schemas: app,kb,runtime
+    default-schema: app
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6380}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+
+  servlet:
+    multipart:
+      max-file-size: ${MAX_UPLOAD_SIZE_MB:100}MB
+      max-request-size: ${MAX_UPLOAD_SIZE_MB:100}MB
+
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: UTC
+
+# =============================================================================
+server:
+  port: ${API_PORT:8080}
+  shutdown: graceful
+  error:
+    # 交给 GlobalExceptionHandler 统一出口，不用 Spring 默认错误页
+    whitelabel:
+      enabled: false
+  tomcat:
+    # SSE 长连接的保持时间。默认值偏短，会在长咨询过程中断开。
+    connection-timeout: 120s
+    threads:
+      max: 200
+
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # 分区：liveness 不碰外部依赖，readiness 才检查数据库。
+      # 用 readiness 做存活判断会在数据库抖动时触发重启风暴，而重启治不了数据库。
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          # databaseReadiness 是自定义指示器（校验数据库连通 + pgvector + schema）。
+          # 它不能叫 readiness —— 那个名字被 Spring Boot 保留给该组的 StatusAggregator，
+          # 撞名会导致应用启动失败，而报错信息指向类型不匹配，不提示是命名冲突。
+          include: databaseReadiness,db
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+# =============================================================================
+logging:
+  pattern:
+    # traceId 放在最前面：跨 Java 与 Python 两个运行时排查时，
+    # 这是唯一能直接对齐两侧日志的字段
+    console: "%d{HH:mm:ss.SSS} [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.lexbridge: ${LOG_LEVEL:INFO}
+    # Hibernate 的 SQL 日志在 INFO 下会淹没业务日志；需要时单独开
+    org.hibernate.SQL: WARN
+    # 组织架构规则测试失败时要看清是哪个类，因此不压 ArchUnit 的日志
+    com.tngtech.archunit: INFO
+
+# =============================================================================
+# 应用自定义配置
+# =============================================================================
+lexbridge:
+  ai:
+    # 内网地址。ai 服务不发布宿主端口，只有 backnet 内可达。
+    base-url: ${AI_SERVICE_URL:http://ai:8000}
+    # 内部调用令牌。租户身份在服务间传递**只走这个令牌**，
+    # 绝不从请求体读取——这是 AC-5.1「跨租户 0 成功」的组成部分。
+    internal-token-secret: ${INTERNAL_TOKEN_SECRET:}
+    connect-timeout: 5s
+    # 咨询链路是长任务：一次税务筹划可能要跑几十秒
+    read-timeout: 180s
+  security:
+    jwt-secret: ${JWT_SECRET:}
+    jwt-ttl-minutes: ${JWT_TTL_MINUTES:480}
+  storage:
+    upload-dir: ${UPLOAD_DIR:./data/files}
+  ingestion:
+    ocr-enabled: ${OCR_ENABLED:false}

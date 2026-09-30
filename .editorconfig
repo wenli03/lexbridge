@@ -1,0 +1,44 @@
+# =============================================================================
+# 编辑器统一配置
+# =============================================================================
+# 这个文件存在的最直接原因：踩过一次 BOM 的坑。
+#
+# Windows PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写入 UTF-8 BOM
+# （EF BB BF）。而 javac 遇到 BOM 会报「需要 class、interface、enum 或 record」，
+# **错误位置指向 import 行而不是文件开头** —— 于是排查方向会变成
+# 「这几行 import 有什么问题」，而真正的异常在第一行的三个字节里。
+#
+# .editorconfig 被绝大多数编辑器与 IDE 原生支持，因此这比每次事后清理更有效：
+# 问题在写入的那一刻就不会发生。
+# =============================================================================
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{java,xml}]
+indent_size = 4
+
+[*.{py,pyi}]
+indent_size = 4
+max_line_length = 100
+
+[*.{md,markdown}]
+# 中文文档里行尾的两个空格是 Markdown 的硬换行，
+# 去掉它们会让段落合并，因此文档不裁剪行尾空白
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[{*.sh,mvnw}]
+end_of_line = lf

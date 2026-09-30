@@ -1,0 +1,263 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind CSS v4 采用 CSS-first 配置：主题变量写在 @theme 块里，
+ * 不再需要 tailwind.config.js。这样"设计令牌"与"使用它的样式"在同一份文件里，
+ * 改配色时不必在配置文件与样式文件之间来回跳。
+ *
+ * 色彩取向上刻意偏冷静：这是律师处理跨境合规问题的工具，
+ * 界面上任何一处过饱和的颜色都在传递错误的情绪。
+ */
+@theme {
+  /* 主色：沉稳的靛蓝，用于导航与主按钮 */
+  --color-brand-50: oklch(0.97 0.01 265);
+  --color-brand-100: oklch(0.93 0.03 265);
+  --color-brand-200: oklch(0.87 0.06 265);
+  --color-brand-300: oklch(0.78 0.09 265);
+  --color-brand-400: oklch(0.68 0.12 265);
+  --color-brand-500: oklch(0.58 0.15 265);
+  --color-brand-600: oklch(0.50 0.16 265);
+  --color-brand-700: oklch(0.42 0.14 265);
+  --color-brand-800: oklch(0.35 0.11 265);
+  --color-brand-900: oklch(0.29 0.08 265);
+
+  /*
+   * 合规语义色。
+   *
+   * 这三个颜色在界面上的含义是固定的，不能当普通装饰色使用：
+   *   risk    —— 红线命中，必须拒答
+   *   caution —— 合规风险提示，可继续但有保留
+   *   safe    —— 合法区间内的设计与对比
+   *
+   * 系统里"合法税务筹划"与"违法逃税"的边界是靠这套颜色传达给使用者的，
+   * 因此它们的用法要与 PRD 的合规基线一一对应，不能混用。
+   */
+  /* risk-100 与 safe-600 不是新增的设计决定，是补齐：
+     ReviewView 里已经在用 `hover:bg-risk-100`；safe-600 后来成了「确认」按钮的实心底色，
+     而 Tailwind v4 对未定义的工具类**不报错也不生效**——按钮悬停没有任何反馈、
+     批量确认的对勾没有颜色，都表现为"样式看起来就是这样"。 */
+  --color-risk-50: oklch(0.97 0.02 25);
+  --color-risk-100: oklch(0.94 0.045 25);
+  --color-risk-200: oklch(0.88 0.07 25);
+  --color-risk-500: oklch(0.62 0.20 25);
+  --color-risk-700: oklch(0.48 0.18 25);
+  --color-risk-800: oklch(0.42 0.16 25);
+
+  --color-caution-50: oklch(0.97 0.03 85);
+  --color-caution-200: oklch(0.90 0.09 85);
+  --color-caution-500: oklch(0.72 0.15 75);
+  --color-caution-700: oklch(0.55 0.13 65);
+  --color-caution-800: oklch(0.44 0.11 60);
+
+  --color-safe-50: oklch(0.97 0.02 155);
+  --color-safe-200: oklch(0.88 0.06 155);
+  --color-safe-500: oklch(0.62 0.14 155);
+  --color-safe-600: oklch(0.55 0.13 155);
+  --color-safe-700: oklch(0.48 0.12 155);
+  --color-safe-800: oklch(0.42 0.10 155);
+
+  /*
+   * 带文字的语义色一律用 800 档；700 及更浅只用于描边、圆点、底色。
+   *
+   * **这里更正一处我自己算错过的数。** 之前写过「caution-700 在白底仅 3.76:1、
+   * risk-700 在 risk-50 上仅 4.47:1」——那是把 OKLab 的 L 当成 CIELAB 的 L*
+   * 直接套 CIE 公式算的，等于把每个有彩度的颜色都当成同亮度的灰。
+   * 按实际 sRGB 算，这三个 700 都过线：
+   *
+   *   caution-700  白底 5.02:1
+   *   risk-700     白底 7.19:1   risk-50 上 6.50:1
+   *   safe-700     白底 6.16:1
+   *
+   * 真正没过线的是另外两种写法，这一轮一并修掉：
+   *
+   *   一是**给语义色加透明度做「弱化」**——`text-risk-700/70` 落在 risk-50 卡上
+   *     只有 2.44:1，`text-caution-700/80` 落在 caution-50 上只有 2.68:1。
+   *     弱化应当由字号和字重承担；透明度在降低对比度的同时，
+   *     也把颜色本身改成了另一个颜色，
+   *     而这三个颜色的含义是固定的（见上），不能被稀释。
+   *
+   *     （再更正一处：这两个数上一版写的是 3.81:1 与 3.25:1，也是错的。
+   *       错法不同——那次是把 alpha 混合当成对亮度加权，正确做法是在
+   *       sRGB 通道上合成之后再算相对亮度。方向没变：两处都不过线。）
+   *   二是**把白字放在 500 档实心色上**——`bg-caution-500` 上只有 2.54:1，
+   *     连非文字的 3:1 都不到。
+   *
+   * 800 档实测：risk 白底 9.19:1 / risk-50 上 8.32:1；
+   *              caution 白底 8.03:1 / caution-50 上 7.36:1；
+   *              safe 白底 8.06:1 / safe-50 上 7.44:1。
+   * 略低于 slate-700 的 10.34:1，即「语义色的正文比中性正文稍轻」，
+   * 这个关系是对的——语义色是标记，不是正文本身。
+   *
+   * （这里也更正一个数：上一版写的是「slate-700 的 9.74:1」，实测 10.34:1。
+   *   关系没变，数变了。）
+   */
+
+  /*
+   * 中性色文字的层级方案。
+   *
+   * 这一层原本有五档（400 / 500 / 600 / 700 / 800 与 900），但最底下那档不成立。
+   * 按实际 sRGB 实测（白底 / slate-50 上 / slate-100 上）：
+   *
+   *   slate-400   2.63   2.51   2.40
+   *   slate-500   4.77   4.55   4.35
+   *   slate-600   7.56   7.23   6.90
+   *   slate-700  10.34   9.88   9.44
+   *
+   * 400 怎么算都不过 4.5:1。500 更麻烦：它在白底勉强过，但这个应用的底不是白的
+   * ——body 是 bg-slate-50，此外还有 bg-slate-100 的角色标签与登录页底。
+   * 500 落在 slate-100 上只有 4.35:1，是不过的，而代码里确实有这种落法。
+   * 一档「换个底就违法」的颜色，不能当层级的地板。
+   *
+   * 所以文字层级收敛成四档，地板抬到 600：
+   *
+   *   slate-900  页面主标题                                 17.84:1
+   *   slate-800  正文：结论、条款原文、表格主体               14.66:1
+   *   slate-700  标签、控件、导航、区块标题                   10.34:1
+   *   slate-600  元信息：帮助文字、层级路径、时间戳、          7.56:1
+   *              traceId、分页、表头
+   *   ──────────────────────────────────────────────────────────
+   *   slate-300  禁用态。非活动控件，1.4.3 明确豁免，浅色才是对的信号
+   *   slate-400  描边、分隔线、图标笔画。非文字，不受 1.4.3 约束
+   *   slate-500  同上；只在需要比 400 更清楚的边或图标上用
+   *
+   * **规则一句话：文字只用 600 及以上；400 与 500 只做非文字。**
+   *
+   * 地板为什么是 600 而不是 500：500 在 slate-50 上 4.55:1，只比线高 1%。
+   * 把地板定在 1% 余量上，等于下次谁调一下令牌、或者把某段文字挪到深一点的
+   * 卡上，它就悄无声息地掉到线下——正是这几轮一直在修的那类失败。
+   * 600 在三种底上都有 6.9:1 以上，规则不带条件，也就不会被忘掉。
+   *
+   * 「弱化」这件事上一轮已经定过一次（见上：交给字号和字重，不要用透明度），
+   * 中性色同理：三级文字之所以安静，靠的是 12px + 常规字重，不是靠一档
+   * 刚好卡在线上的灰。
+   */
+
+  /*
+   * 控件边界：slate-500。
+   *
+   * 1.4.11 和 1.4.3 是两条标准，前几轮一直混着看。1.4.3 管文字，要 4.5:1；
+   * 1.4.11 管「识别控件及其状态所必需的视觉信息」，要 3:1。描边不是文字，
+   * 所以 400 这一档在文字规则下没问题，在控件规则下不够：
+   *
+   *   slate-300  白底 1.49   原来的控件描边取值 —— 不过
+   *   slate-400  白底 2.63   提一档仍然不过
+   *   slate-500  白底 4.76   最低的合格档
+   *
+   * 全站的输入框、次要按钮、分页按钮、复选框、拖拽区都是白底 + 一条描边，
+   * 描边是唯一说明「这里能输入 / 这里能点」的东西，所以它就是
+   * 「识别控件所必需的视觉信息」。48 处一并提到 500。
+   *
+   * 于是中性色每一档只剩一个含义，不再有一档两用：
+   *
+   *   slate-100  表格分隔线
+   *   slate-200  结构边界：卡片、提示框、横幅
+   *   slate-300  禁用态文字，仅此一项
+   *   slate-400  装饰性笔画：虚线占位、装饰圆点
+   *   slate-500  控件边界（1.4.11 的 3:1）
+   *   slate-600+ 文字（见上）
+   *
+   * 焦点指示器是同一类问题：`focus:border-brand-400` 是 2.91:1，也不过 3:1，
+   * 而这些输入框都带 `focus:outline-none`——焦点时唯一的变化就是那条描边。
+   * 提到 brand-500（4.38:1）。这不是新决定：LoginView 一直用的就是 brand-500，
+   * 改的是让其余页面跟上它。
+   */
+
+  --font-sans:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  /* 法条原文与引用需要等宽：数字与条款号对齐后更易核对 */
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, 'Courier New', monospace;
+}
+
+/*
+ * 基础层。用 @layer base 而不是裸样式，是为了让 Tailwind 的 utility
+ * 仍能覆盖它们——裸样式优先级更高，会悄悄压掉 utility 类。
+ */
+@layer base {
+  html {
+    /* 中文界面下 16px 偏紧，法条原文尤其难读 */
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-800 font-sans;
+  }
+
+  /* 键盘可达性：默认的 focus 轮廓在浅色背景上几乎看不见，
+     而这是个需要频繁跳转的表单密集型界面 */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-500;
+  }
+}
+
+@layer components {
+  /* 法条引用：整站统一的呈现方式。
+     引用是本系统的核心概念——"无引用不出结论"——因此它的样式必须统一，
+     不能各页面自行发挥。 */
+  .citation {
+    @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-mono
+           bg-brand-50 text-brand-700 border border-brand-200
+           hover:bg-brand-100 cursor-pointer transition-colors;
+  }
+
+  /* 已失效的引用。用 caution 而不是 risk：条文失效不是红线，
+     但也不能继续按现行法读它——它恰好落在"有保留地继续"这一档。
+     底色已经很浅，所以 hover 靠加深描边而不是再换一层底色。 */
+  .citation-stale {
+    @apply bg-caution-50 text-caution-800 border-caution-200
+           hover:border-caution-500 hover:bg-caution-50;
+  }
+
+  .card {
+    @apply rounded-lg border border-slate-200 bg-white shadow-sm;
+  }
+}
+
+/*
+ * 焦点指示器：全站唯一的一处定义。
+ *
+ * 这段写法原先在 21 个表单控件上逐字重复，另有 2 处按钮是它的等价变体。
+ * 它们不是 21 个决定，是一个决定被抄了 21 遍——而且抄走样了：
+ *
+ *   18 处  focus:border-brand-500 focus:outline-none
+ *    3 处  focus:border-brand-500 focus:ring-1 focus:ring-brand-500    （LoginView）
+ *    1 处  focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
+ *    1 处  focus-visible:outline-2 focus-visible:outline-offset-2      （StateBlock）
+ *
+ * 前 18 处只换了描边色：静止态 slate-500（4.76:1）→ 焦点 brand-500（4.38:1），
+ * 亮度几乎没动，变的是色相；而 outline-none 又把 base 层那条全局轮廓压掉了，
+ * 于是焦点状态只剩这一个信号。LoginView 那 3 处反而是对的（描边 + ring），
+ * 原型 .input:focus 也是（描边 + 3px 光晕）。走样的是多数、正确写法是少数——
+ * 这正是它该收成一个类的原因：散着写的时候，抄错的那版会变成事实标准。
+ *
+ * 收拢时把三件事一并定下来：
+ *
+ * 一、类放在 @utility 里，不放进上面的 @layer components。
+ *     components 层排在 utilities 之前，会被元素上原有的 border-slate-500
+ *     直接压掉——类写对了、编译也过，焦点时描边却纹丝不动。
+ *     @utility 产出的规则落在 utilities 层，.focus-ring:focus（0-2-0）
+ *     才压得住 .border-slate-500（0-1-0）。层叠结果与改动前一致：
+ *     LoginView 那三个出错字段（描边是 risk-500）焦点时同样转成 brand-500。
+ *
+ * 二、描边用 :focus，环用 :focus-visible。
+ *     描边是「这里现在是活动字段」的常态反馈，鼠标点进来也该有；
+ *     环是「键盘焦点在这儿」的信号，只对键盘出现。
+ *     文本输入在规范里属于"一定命中 :focus-visible"的情形，所以鼠标点进
+ *     输入框时两者都在，这次收拢没有减掉任何反馈。
+ *
+ * 三、用 outline-hidden 而不是 outline-none。
+ *     v4 的 outline-none 会连强制高对比模式下的轮廓一起抹掉，而环是
+ *     box-shadow、在那模式下不渲染——两者相抵，焦点指示会整个消失。
+ *     outline-hidden 仅在该模式下把轮廓还原回来。
+ *
+ * ring 取 brand-500（白底 4.38:1），过 1.4.11 对焦点指示的 3:1。
+ */
+@utility focus-ring {
+  &:focus {
+    @apply border-brand-500 outline-hidden;
+  }
+  &:focus-visible {
+    @apply ring-2 ring-brand-500;
+  }
+}

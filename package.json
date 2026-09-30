@@ -1,0 +1,14 @@
+{
+  "name": "lexbridge-tooling",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "仓库根的工具依赖。只服务于文档与演示的维护脚本，不参与任何构建产物。",
+  "//": "为什么根目录要有一个 package.json：scripts/capture_screenshots.mjs 需要 playwright。ESM 的解析规则是从脚本所在目录向上找 node_modules，而 frontend/node_modules 是它的兄弟目录、不在查找路径上——把 playwright 装在 frontend 里对这个脚本不可见。",
+  "scripts": {
+    "screenshots": "node scripts/capture_screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
