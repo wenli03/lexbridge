@@ -119,6 +119,20 @@ public class DemoDataBootstrap implements ApplicationRunner {
                     seed.role()));
             count++;
         }
+
+        // **必须在切换租户之前把挂起的 INSERT 发出去。**
+        //
+        // `save()` 只是放进一级缓存，真正的 INSERT 由 Hibernate 延迟到 flush。
+        // 而 RLS 的 WITH CHECK 在 INSERT 的那一刻用当时的 app.current_tenant 求值。
+        // 本方法结束后调用方就把上下文切到下一个租户了，于是最后一条挂起的写入
+        // 会带着**下一个租户**的上下文发出，被判为越界。
+        //
+        // 症状有很强的迷惑性：报错是"新行违反行级安全策略"（指向权限配置），
+        // 而表现是**每个租户都少建一个账号**——少的那个恰好是最后一个
+        // （`compliance`，因为它的 save 之后没有别的查询来触发自动 flush）。
+        // 实测在全新数据库上必现；在已有数据的库上会被"存在性检查返回 true"
+        // 掩盖过去，所以它躲过了本地反复重启的验证，只被"从零开始跑一次"抓到。
+        userRepository.flush();
         return count;
     }
 

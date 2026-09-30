@@ -21,11 +21,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8088"
+# 端口从 WEB_PORT 读，默认 8088。与 README 里"不要照抄固定端口"是同一条理由：
+# 演示环境的端口以 deploy/.env 为准，写死会让脚本在一个正确的部署上失败。
+BASE = f"http://localhost:{os.environ.get('WEB_PORT', '8088')}"
 PASSWORD = "LexBridge@2026"
 
 results: list[tuple[bool, str, str]] = []

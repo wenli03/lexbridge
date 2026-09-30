@@ -25,4 +25,25 @@ public interface UserAccountRepository {
     UserAccount save(UserAccount user);
 
     boolean existsByUsername(String username);
+
+    /**
+     * 立即把挂起的写入发给数据库。
+     *
+     * <p><b>这不是一个可有可无的性能开关，漏掉它会产生"违反行级安全策略"的报错。</b>
+     *
+     * <p>原因链：JPA 的 {@code save()} 只是把实体放进一级缓存，真正的 INSERT
+     * 由 Hibernate 延迟到 flush 时才发。而 RLS 的 {@code WITH CHECK} 是在
+     * **INSERT 的那一刻**用当时的 {@code app.current_tenant} 求值的。
+     * 两者叠在一起就出现一个陷阱：如果在一个事务里依次处理多个租户，
+     * 最后一个租户的写入会带着**下一个租户**的上下文发出——于是它被判为越界。
+     *
+     * <p>实测踩到：{@code DemoDataBootstrap} 在一个事务里逐个租户建演示账号，
+     * 每个租户的**最后一个**账号（它的 save 之后没有别的查询来触发自动 flush）
+     * 被推迟到下一个租户开始查询时才发出，报错是"新行违反行级安全策略"，
+     * 指向权限配置——而真实原因是**延迟写入**。
+     * 表现还很有迷惑性：租户一总是少建一个账号，租户二正常。
+     *
+     * <p>因此凡是"在一个事务里切换租户"的调用方，必须在切换之前显式 flush。
+     */
+    void flush();
 }
